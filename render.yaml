@@ -1,0 +1,13 @@
+# One process owns all rooms. Do not scale horizontally without shared room routing.
+services:
+  - type: web
+    name: cozygame-server
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000

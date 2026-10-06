@@ -10,6 +10,8 @@ GitHub Pages публикует **только браузерную часть**
 
 Workflow `.github/workflows/pages.yml` проверяет код, собирает клиент и публикует его в Pages после push в `main`. Готовую сборку можно скачать в артефактах Actions (`github-pages`). Исходники и lockfile хранятся в Git; `node_modules` и локальный `dist` не коммитятся.
 
+**Готовый вариант размещения:** [запустить игровой сервер на Render](docs/server-hosting.md). Конфигурация `render.yaml` уже добавлена в репозиторий.
+
 Чтобы включить совместную игру:
 1. Разместите этот же репозиторий на Node.js/Docker-хостинге. Команды: `npm ci && npm run build`, затем `npm start`. Сервер должен предоставлять HTTPS/WSS и поддерживать долгие WebSocket-соединения.
 2. В репозитории откройте **Settings → Secrets and variables → Actions → Variables** и создайте `GAME_SERVER_URL` со значением HTTPS-адреса сервера (например, `https://game.example.com`). Это публичный адрес, не секрет.
