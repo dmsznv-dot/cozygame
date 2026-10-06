@@ -11,6 +11,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      pages_enabled: ${{ steps.pages.outputs.enabled }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,12 +29,28 @@ jobs:
         env:
           VITE_STATIC_HOST: 'true'
           VITE_GAME_SERVER_URL: ${{ vars.GAME_SERVER_URL }}
-      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
+      - name: Check whether Pages is enabled
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/pages" > /tmp/pages.json 2> /tmp/pages-error.txt; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif grep -q 'Not Found' /tmp/pages-error.txt; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Client build is ready. Enable Settings > Pages > Source: GitHub Actions, then run this workflow again."
+            echo "Pages is not enabled yet. The client build is available in the github-pages artifact." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat /tmp/pages-error.txt
+            exit 1
+          fi
   deploy:
     needs: build
+    if: needs.build.outputs.pages_enabled == 'true'
     runs-on: ubuntu-latest
     permissions:
       pages: write

@@ -3,6 +3,9 @@
 
 ## GitHub Pages и игровой сервер
 
+**Первое включение:** откройте [Settings → Pages](https://github.com/dmsznv-dot/cozygame/settings/pages), выберите **Source: GitHub Actions**, затем [Actions → Publish GitHub Pages](https://github.com/dmsznv-dot/cozygame/actions/workflows/pages.yml) → **Run workflow**. Интеграции не хватило прав включить Pages самостоятельно (HTTP 403). Пока Pages выключен, workflow успешно собирает клиент и сохраняет артефакт, а публикацию пропускает с пояснением.
+
+
 GitHub Pages публикует **только браузерную часть**. Node.js/WebSocket и комнаты на нём не запускаются. Без отдельного сервера опубликована сцена-предпросмотр с выбором цвета; кнопки совместной игры отключены с объяснением.
 
 Workflow `.github/workflows/pages.yml` проверяет код, собирает клиент и публикует его в Pages после push в `main`. Готовую сборку можно скачать в артефактах Actions (`github-pages`). Исходники и lockfile хранятся в Git; `node_modules` и локальный `dist` не коммитятся.
