@@ -1,4 +1,5 @@
 import "./style.css";
+import type { SoloSession } from "./solo";
 import { resolveGameConnection } from "./connection";
 import * as THREE from "three";
 import { Forest } from "./world";
@@ -18,13 +19,17 @@ import {
 } from "../shared/game";
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
-const connection = resolveGameConnection(import.meta.env.VITE_GAME_SERVER_URL || '', import.meta.env.VITE_STATIC_HOST === 'true', location.href);
+const connection = resolveGameConnection(
+  import.meta.env.VITE_GAME_SERVER_URL || "",
+  import.meta.env.VITE_STATIC_HOST === "true",
+  location.href,
+);
 const homePath = import.meta.env.BASE_URL;
-document.querySelector<HTMLAnchorElement>('#brand a')!.href = homePath;
+document.querySelector<HTMLAnchorElement>("#brand a")!.href = homePath;
 if (!connection.url) {
-  $('lobby-error').textContent = connection.reason;
-  $<HTMLButtonElement>('create').disabled = true;
-  $('join-form').querySelector('button')!.disabled = true;
+  $("lobby-error").textContent = connection.reason;
+  $("solo").hidden = true;
+  $("join-form").querySelector("button")!.disabled = true;
 }
 const canvas = $<HTMLCanvasElement>("world");
 let world: Forest;
@@ -35,6 +40,7 @@ try {
   throw e;
 }
 const audio = new ForestAudio();
+let solo: SoloSession | null = null;
 let color = localStorage.getItem("trail-color") || COLORS[0];
 if (!COLORS.includes(color)) color = COLORS[0];
 const names = [
@@ -102,7 +108,12 @@ function toast(message: string, seconds = 4) {
   $("toast").classList.add("visible");
   toastUntil = performance.now() + seconds * 1000;
 }
-function send(data: unknown) {
+function send(data: any) {
+  if (solo) {
+    if (data.type === "action") solo.action(data.action);
+    if (data.type === "move") solo.pose(data);
+    return;
+  }
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
 }
 function action(a: unknown) {
@@ -112,7 +123,10 @@ function action(a: unknown) {
 function setConnecting(value: boolean) {
   connecting = value;
   $<HTMLButtonElement>("create").disabled = value;
-  $<HTMLButtonElement>("join-form").querySelector("button")!.disabled = value;
+  $("create").setAttribute("aria-busy", String(value));
+  $<HTMLButtonElement>("solo").disabled = value;
+  $<HTMLButtonElement>("join-form").querySelector("button")!.disabled =
+    value || !connection.url;
 }
 function connect(code: string, reconnecting = false) {
   if (connecting || !connection.url) return;
@@ -211,7 +225,85 @@ function connect(code: string, reconnecting = false) {
     }
   };
 }
-$("create").onclick = () => connect("");
+async function startSolo() {
+  if (connecting || active) return;
+  // A rejected join may leave an open socket. It must not alter local play later.
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (ws) {
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    ws.close();
+    ws = null;
+  }
+  setConnecting(true);
+  $("create").textContent = "Готовим лес…";
+  $("lobby-error").textContent = "";
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const module = await Promise.race([
+      import("./solo"),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(
+              new Error(
+                "Загрузка заняла слишком много времени. Нажмите ещё раз.",
+              ),
+            ),
+          20000,
+        );
+      }),
+    ]);
+    solo = await module.createSolo(
+      $<HTMLInputElement>("name").value.trim() || "Путник",
+      color,
+    );
+    myId = solo.id;
+    snapshot = solo.snapshot();
+    const player = snapshot.players[0];
+    position.set(player.pos.x, player.pos.y, player.pos.z);
+    yaw = 0;
+    pitch = 0;
+    vy = 0;
+    active = true;
+    remoteReady = true;
+    document.body.classList.add("playing");
+    $("lobby").hidden = true;
+    $("hud").hidden = false;
+    $("invite").hidden = true;
+    world.lobbyAvatar.visible = false;
+    world.companion.visible = false;
+    const localUrl = new URL(location.href);
+    localUrl.searchParams.delete("room");
+    history.replaceState({}, "", localUrl);
+    $("room-label").textContent =
+      "Одиночная прогулка · прогресс до обновления страницы";
+    openMenu();
+    $("modal-title").textContent = "Лес открыт для вас";
+    $("modal-desc").textContent =
+      "Все три механики можно проверить одному. Подсказки сохраняются, корзина фиксируется.";
+    updateUI();
+    audio.start();
+  } catch (error) {
+    solo?.dispose();
+    solo = null;
+    $("lobby-error").textContent =
+      error instanceof Error
+        ? error.message
+        : "Не удалось открыть лес. Попробуйте ещё раз.";
+  } finally {
+    clearTimeout(timeout);
+    setConnecting(false);
+    $("create").innerHTML = "Начать прогулку <span>→</span>";
+  }
+}
+$("create").onclick = () => (connection.url ? connect("") : void startSolo());
+$("solo").onclick = () => void startSolo();
 $("join-form").onsubmit = (e) => {
   e.preventDefault();
   const code = $<HTMLInputElement>("room-code").value.trim().toUpperCase();
@@ -242,8 +334,12 @@ function openMenu() {
   if (document.pointerLockElement) document.exitPointerLock();
   $("overlay").hidden = false;
   $("modal-title").textContent = "Небольшая передышка";
-  $("modal-desc").textContent = "Лес подождёт. Друг продолжает гулять.";
-  $("copy-menu").hidden = !active;
+  $("modal-desc").textContent = solo
+    ? "Одиночная прогулка на паузе."
+    : "Лес подождёт. Друг продолжает гулять.";
+  $("help-content").hidden = !!solo;
+  $("solo-help").hidden = !solo;
+  $("copy-menu").hidden = !active || !!solo;
   $("leave").hidden = !active;
   $("resume").innerHTML = active
     ? "Вернуться на тропу <span>↗</span>"
@@ -253,6 +349,7 @@ $("leave").onclick = () => {
   active = false;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   ws?.close();
+  solo?.dispose();
   location.href = homePath;
 };
 $("menu-button").onclick = openMenu;
@@ -261,7 +358,7 @@ $("lobby-help").onclick = () => {
   openMenu();
   $("modal-title").textContent = "Гулять. Замечать. Быть рядом.";
   $("modal-desc").textContent =
-    "Игра для двух компьютеров с мышью и клавиатурой.";
+    "Можно гулять одному или пригласить друга в сетевую комнату. Нужны мышь и клавиатура.";
 };
 $("resume").onclick = async () => {
   if (helpFromLobby && !active) {
@@ -395,11 +492,13 @@ function updateUI() {
   if (!snapshot) return;
   const s = snapshot;
   const friend = s.players.find((p) => p.id !== myId);
-  $("partner").textContent = friend
-    ? friend.online
-      ? `● ${friend.name} рядом`
-      : `○ ${friend.name} вернётся…`
-    : "○ Ждём друга…";
+  $("partner").textContent = solo
+    ? "Одиночная прогулка"
+    : friend
+      ? friend.online
+        ? `● ${friend.name} рядом`
+        : `○ ${friend.name} вернётся…`
+      : "○ Ждём друга…";
   const flags = [s.progress.signs, s.progress.throwDone, s.progress.lights];
   const labels = ["Знаки", "Броски", "Светлячки"];
   $("progress").innerHTML = flags
@@ -414,7 +513,9 @@ function updateUI() {
     lastCount = count;
   }
   $("objective").textContent = solved(s.progress)
-    ? "Мост открыт. Встретьте вечер вместе"
+    ? solo
+      ? "Мост открыт. Все механики пройдены"
+      : "Мост открыт. Встретьте вечер вместе"
     : "Зажгите три огонька";
   if (s.progress.notice && lastNotice !== s.progress.notice) {
     lastNotice = s.progress.notice;
@@ -479,6 +580,38 @@ function context() {
   }
   if (position.z < -31 && position.z > -36 && !solved(s.progress))
     prompt = "Три огонька соберут мост. Найдите все загадки вместе.";
+  if (solo) {
+    if (near("signPlate", 7) && s.signObserver === myId) {
+      panel =
+        '<h3>Запомните рисунки</h3><p>Последовательность сохранена в заметке. Теперь подойдите к панели снаружи.</p><div class="symbols">' +
+        SIGN_SEQUENCE.map(
+          (i) => `<span class="symbol">${["◒", "☾", "☀", "≈"][i]}</span>`,
+        ).join("") +
+        "</div>";
+      prompt = "Подсказка сохранена — можно сойти с круга";
+    }
+    if (near("signPanel"))
+      panel = `<h3>Лесные знаки · одному</h3><p>${solo.notes.signs ? "Заметка: луна → лист → солнце" : "Сначала встаньте на круг внутри домика, чтобы записать рисунки."}</p><div class="key-list">1 — лист ◒ · 2 — луна ☾<br>3 — солнце ☀ · 4 — волна ≈</div><p>${s.progress.signs ? "Готово ✓" : `Совпало ${s.progress.signIndex} из 3`}</p>`;
+    if (near("lever")) {
+      panel = `<h3>Корзина · одному</h3><p>Зафиксируйте рычаг клавишей E, настройте корзину стрелками ← → и идите за шаром. Рычаг останется включённым.</p><p>Попадания: ${s.progress.throws} / 3</p>`;
+      prompt =
+        s.progress.operator === myId
+          ? "Корзина зафиксирована • ← → положение • E отпустить"
+          : "E — зафиксировать корзину";
+    }
+    if (near("rack", 9) && !held && !s.progress.operator)
+      prompt = "Сначала зафиксируйте рычаг справа от площадки: E";
+    if (near("lightPlate", 5) && s.lightObserver === myId) {
+      panel = `<h3>Светлячки · заметка</h3><p>Горит ${solo.notes.lightCount} огня. Число сохранено — пройдите к таблице за стеной.</p><p>Раунд ${Math.min(3, s.progress.lightRound + 1)} из 3</p>`;
+      prompt = "Число сохранено — можно идти к таблице";
+    }
+    if (near("lightPanel"))
+      panel = `<h3>Огни → код</h3><p>${solo.notes.lightRound === s.progress.lightRound ? `В заметке: ${solo.notes.lightCount} огня.` : "Вернитесь к кругу у фонарей и запишите новую группу огней."}</p><div class="key-list">1 огонь → 4 · 2 огня → 7<br>3 огня → 2 · 4 огня → 9<br>5 огней → 5</div><p>${s.progress.lights ? "Готово ✓" : `Раунд ${s.progress.lightRound + 1} из 3`}</p>`;
+    if (position.z < -43)
+      prompt = "Все три механики пройдены. Можно просто погулять ♡";
+    if (position.z < -31 && position.z > -36 && !solved(s.progress))
+      prompt = "Пройдите три задачи, чтобы открыть мост.";
+  }
   $("prompt").textContent = prompt;
   $("context-panel").hidden = !panel;
   if ($("context-panel").innerHTML !== panel)
@@ -531,6 +664,17 @@ function frame(now: number) {
       });
       lastSend = now;
     }
+    if (solo) {
+      solo.pose({
+        pos: { x: position.x, y: position.y, z: position.z },
+        yaw,
+        pitch,
+        point: pointing,
+      });
+      if (!paused) solo.tick(dt);
+      snapshot = solo.snapshot();
+      updateUI();
+    }
     world.apply(snapshot, myId);
     context();
     audio.update(position.z);
@@ -549,5 +693,6 @@ Object.defineProperty(window, "trail", {
     yaw,
     pitch,
     drawCalls: world.renderer.info.render.calls,
+    mode: solo ? "solo" : "online",
   }),
 });

@@ -41,7 +41,7 @@ button {
 }
 button:disabled {
   opacity: 0.6;
-  cursor: wait;
+  cursor: not-allowed;
 }
 a {
   color: inherit;
@@ -791,4 +791,23 @@ kbd {
 }
 .secondary {
   font-size: 13px;
+}
+
+button[aria-busy="true"] {
+  cursor: progress;
+}
+.solo-button {
+  background: transparent;
+  color: var(--cream);
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #efe5ce55;
+  border-radius: 3px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+#solo-help p {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #54654d;
 }
