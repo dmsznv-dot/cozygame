@@ -9,10 +9,8 @@ import {
   COLORS,
   SPAWN,
   STATIONS,
-  SYMBOLS,
-  SIGN_SEQUENCE,
-  LIGHT_COUNTS,
   canOccupy,
+  floorHeight,
   distance,
   solved,
   type Snapshot,
@@ -90,11 +88,15 @@ let ws: WebSocket | null = null,
   vy = 0,
   onGround = true,
   pointing = false;
+let chargeStarted: number | null = null;
+function cancelThrow() {
+  if (chargeStarted !== null) action({ kind: "cancelThrow" });
+  chargeStarted = null;
+}
 const position = new THREE.Vector3(SPAWN.x, SPAWN.y, SPAWN.z);
 const keys = new Set<string>();
 let lastSend = 0,
   lastStep = 0,
-  lastNotice = "",
   toastUntil = 0,
   lastCount = 0,
   reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -208,6 +210,7 @@ function connect(code: string, reconnecting = false) {
     }
   };
   ws.onclose = (e) => {
+    chargeStarted = null;
     setConnecting(false);
     remoteReady = false;
     if (active) {
@@ -285,8 +288,7 @@ async function startSolo() {
       "Одиночная прогулка · прогресс до обновления страницы";
     openMenu();
     $("modal-title").textContent = "Лес открыт для вас";
-    $("modal-desc").textContent =
-      "Все три механики можно проверить одному. Подсказки сохраняются, корзина фиксируется.";
+    $("modal-desc").textContent = "Тихий лес. Время никуда не торопится.";
     updateUI();
     audio.start();
   } catch (error) {
@@ -329,6 +331,7 @@ async function copyInvite() {
 $("invite").onclick = copyInvite;
 $("copy-menu").onclick = copyInvite;
 function openMenu() {
+  cancelThrow();
   paused = true;
   keys.clear();
   if (document.pointerLockElement) document.exitPointerLock();
@@ -419,7 +422,13 @@ function interact() {
   if (!snapshot) return;
   const held = snapshot.balls.find((b) => b.heldBy === myId);
   if (held) {
-    throwBall();
+    cancelThrow();
+    action({ kind: "drop" });
+    return;
+  }
+  const target = world.targetInteraction();
+  if (target) {
+    action(target);
     return;
   }
   if (near("lever")) {
@@ -458,7 +467,6 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyE") interact();
   if (e.code === "KeyQ") {
     pointing = true;
-    toast("Вы показываете другу направление", 1.5);
   }
   if (e.code === "ArrowLeft" || e.code === "ArrowRight")
     action({ kind: "lane", value: e.code === "ArrowLeft" ? -1 : 1 });
@@ -475,19 +483,38 @@ document.addEventListener("keyup", (e) => {
   if (e.code === "KeyQ") pointing = false;
 });
 window.addEventListener("blur", () => {
+  cancelThrow();
   keys.clear();
   pointing = false;
 });
 document.addEventListener("mousedown", (e) => {
   if (
-    e.button === 0 &&
-    active &&
-    !paused &&
-    document.pointerLockElement === canvas &&
-    snapshot?.balls.some((b) => b.heldBy === myId)
+    !active ||
+    paused ||
+    !remoteReady ||
+    document.pointerLockElement !== canvas
   )
-    throwBall();
+    return;
+  if (e.button === 2) {
+    cancelThrow();
+    return;
+  }
+  if (e.button !== 0) return;
+  if (snapshot?.balls.some((b) => b.heldBy === myId)) {
+    chargeStarted = performance.now();
+    action({ kind: "charge" });
+  } else {
+    const target = world.targetInteraction();
+    if (target) action(target);
+  }
 });
+document.addEventListener("mouseup", (e) => {
+  if (e.button !== 0 || chargeStarted === null) return;
+  if (active && !paused && remoteReady) throwBall();
+  else action({ kind: "cancelThrow" });
+  chargeStarted = null;
+});
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 function updateUI() {
   if (!snapshot) return;
   const s = snapshot;
@@ -513,111 +540,27 @@ function updateUI() {
     lastCount = count;
   }
   $("objective").textContent = solved(s.progress)
-    ? solo
-      ? "Мост открыт. Все механики пройдены"
-      : "Мост открыт. Встретьте вечер вместе"
-    : "Зажгите три огонька";
-  if (s.progress.notice && lastNotice !== s.progress.notice) {
-    lastNotice = s.progress.notice;
-    toast(lastNotice);
-  }
+    ? "Тихая тропа · закат"
+    : "Тихая тропа";
 }
 function context() {
-  if (!snapshot) return;
-  const s = snapshot,
-    held = s.balls.some((b) => b.heldBy === myId);
-  let prompt = "",
-    panel = "",
-    place = "Тихая тропа";
+  let place = "Тихая тропа";
   if (position.z > 10) place = "Поляна встреч";
-  if (position.z < -43) {
-    place = "Наш вечер";
-    prompt = "Вы нашли дорогу вместе. Можно просто побыть здесь ♡";
-  }
-  if (near("signPlate", 7)) {
-    place = "Домик лесных знаков";
-    if (s.signObserver === myId) {
-      panel =
-        '<h3>Лесные знаки</h3><p>Покажите или назовите другу эти рисунки по порядку. Оставайтесь на круге.</p><div class="symbols">' +
-        SIGN_SEQUENCE.map(
-          (i) => `<span class="symbol">${["◒", "☾", "☀", "≈"][i]}</span>`,
-        ).join("") +
-        "</div><p>Лист · луна · солнце · волна — у друга есть все четыре.</p>";
-    } else
-      prompt =
-        "Встаньте на каменный круг внутри домика, чтобы увидеть рисунки.";
-  }
-  if (near("signPanel")) {
-    place = "Лесные знаки";
-    panel = `<h3>Соберите рисунки</h3><p>Пусть друг встанет на круг в домике и назовёт последовательность.</p><div class="key-list">1 — лист ◒ &nbsp; 2 — луна ☾<br>3 — солнце ☀ &nbsp; 4 — волна ≈</div><p>${s.progress.signs ? "Готово ✓" : `Совпало ${s.progress.signIndex} из 3`}</p>`;
-    prompt = "Нажмите 1–4, чтобы выбрать рисунок";
-  }
-  if (near("rack", 9)) {
-    place = "По ту сторону ручья";
-    if (held) prompt = "ЛКМ — бросить • Цельтесь немного выше корзины";
-    else if (s.balls.some((b) => !b.heldBy && distance(position, b.pos) < 3))
-      prompt = "E — взять светящийся шар";
-  }
-  if (near("lever")) {
-    place = "По ту сторону ручья";
-    panel = `<h3>Помогите попасть</h3><p>Держите рычаг, пока друг бросает шары. Передвигайте корзину стрелками ← →.</p><p>В корзине: ${s.progress.throws} / 3</p>`;
-    prompt =
-      s.progress.operator === myId
-        ? "← → — двигать корзину • E — отпустить"
-        : "E — взяться за рычаг";
-  }
-  if (near("lightPlate", 5)) {
-    place = "Светлячки";
-    if (s.lightObserver === myId) {
-      panel = `<h3>Сосчитайте огоньки</h3><p>Друг видит таблицу кодов с другой стороны стены. Назовите ему количество горящих ламп.</p><p>Раунд ${Math.min(3, s.progress.lightRound + 1)} из 3</p>`;
-      prompt = "Оставайтесь на круге, пока друг вводит код";
-    } else prompt = "Встаньте на круг у фонарей";
-  }
-  if (near("lightPanel")) {
-    place = "Светлячки";
-    panel = `<h3>Огни → код</h3><p>Спросите друга, сколько ламп горит.</p><div class="key-list">1 огонь → 4 &nbsp; 2 огня → 7<br>3 огня → 2 &nbsp; 4 огня → 9<br>5 огней → 5</div><p>${s.progress.lights ? "Готово ✓" : `Раунд ${s.progress.lightRound + 1} из 3`}</p>`;
-    prompt = "Нажмите цифру кода (1–9)";
-  }
-  if (position.z < -31 && position.z > -36 && !solved(s.progress))
-    prompt = "Три огонька соберут мост. Найдите все загадки вместе.";
-  if (solo) {
-    if (near("signPlate", 7) && s.signObserver === myId) {
-      panel =
-        '<h3>Запомните рисунки</h3><p>Последовательность сохранена в заметке. Теперь подойдите к панели снаружи.</p><div class="symbols">' +
-        SIGN_SEQUENCE.map(
-          (i) => `<span class="symbol">${["◒", "☾", "☀", "≈"][i]}</span>`,
-        ).join("") +
-        "</div>";
-      prompt = "Подсказка сохранена — можно сойти с круга";
-    }
-    if (near("signPanel"))
-      panel = `<h3>Лесные знаки · одному</h3><p>${solo.notes.signs ? "Заметка: луна → лист → солнце" : "Сначала встаньте на круг внутри домика, чтобы записать рисунки."}</p><div class="key-list">1 — лист ◒ · 2 — луна ☾<br>3 — солнце ☀ · 4 — волна ≈</div><p>${s.progress.signs ? "Готово ✓" : `Совпало ${s.progress.signIndex} из 3`}</p>`;
-    if (near("lever")) {
-      panel = `<h3>Корзина · одному</h3><p>Зафиксируйте рычаг клавишей E, настройте корзину стрелками ← → и идите за шаром. Рычаг останется включённым.</p><p>Попадания: ${s.progress.throws} / 3</p>`;
-      prompt =
-        s.progress.operator === myId
-          ? "Корзина зафиксирована • ← → положение • E отпустить"
-          : "E — зафиксировать корзину";
-    }
-    if (near("rack", 9) && !held && !s.progress.operator)
-      prompt = "Сначала зафиксируйте рычаг справа от площадки: E";
-    if (near("lightPlate", 5) && s.lightObserver === myId) {
-      panel = `<h3>Светлячки · заметка</h3><p>Горит ${solo.notes.lightCount} огня. Число сохранено — пройдите к таблице за стеной.</p><p>Раунд ${Math.min(3, s.progress.lightRound + 1)} из 3</p>`;
-      prompt = "Число сохранено — можно идти к таблице";
-    }
-    if (near("lightPanel"))
-      panel = `<h3>Огни → код</h3><p>${solo.notes.lightRound === s.progress.lightRound ? `В заметке: ${solo.notes.lightCount} огня.` : "Вернитесь к кругу у фонарей и запишите новую группу огней."}</p><div class="key-list">1 огонь → 4 · 2 огня → 7<br>3 огня → 2 · 4 огня → 9<br>5 огней → 5</div><p>${s.progress.lights ? "Готово ✓" : `Раунд ${s.progress.lightRound + 1} из 3`}</p>`;
-    if (position.z < -43)
-      prompt = "Все три механики пройдены. Можно просто погулять ♡";
-    if (position.z < -31 && position.z > -36 && !solved(s.progress))
-      prompt = "Пройдите три задачи, чтобы открыть мост.";
-  }
-  $("prompt").textContent = prompt;
-  $("context-panel").hidden = !panel;
-  if ($("context-panel").innerHTML !== panel)
-    $("context-panel").innerHTML = panel;
+  if (position.z < -43) place = "Наш вечер";
+  if (near("signPlate", 7) || near("signPanel")) place = "Лесные знаки";
+  if (near("rack", 9) || near("lever")) place = "По ту сторону ручья";
+  if (near("lightPlate", 5) || near("lightPanel")) place = "Светлячки";
   $("place-name").textContent = place;
+  $("prompt").textContent = "";
+  $("context-panel").hidden = true;
+  $("crosshair").classList.toggle("actionable", !!world.targetInteraction());
+  $("crosshair").classList.toggle("charging", chargeStarted !== null);
+  $("crosshair").style.setProperty(
+    "--charge",
+    `${chargeStarted === null ? 0 : Math.min(1, (performance.now() - chargeStarted) / 1200) * 360}deg`,
+  );
 }
+
 let previous = performance.now();
 function frame(now: number) {
   requestAnimationFrame(frame);
@@ -635,17 +578,18 @@ function frame(now: number) {
         dz =
           ((-Math.cos(yaw) * forward - Math.sin(yaw) * side) * speed * dt) /
           length;
-      if (canOccupy(position.x + dx, position.z, snapshot.progress))
+      if (canOccupy(position.x + dx, position.z, snapshot.progress, position.y))
         position.x += dx;
-      if (canOccupy(position.x, position.z + dz, snapshot.progress))
+      if (canOccupy(position.x, position.z + dz, snapshot.progress, position.y))
         position.z += dz;
+      const floor = floorHeight(position.x, position.z, position.y) + SPAWN.y;
       vy -= 14 * dt;
       position.y += vy * dt;
-      if (position.y <= SPAWN.y) {
-        position.y = SPAWN.y;
+      if (position.y <= floor) {
+        position.y = floor;
         vy = 0;
         onGround = true;
-      }
+      } else onGround = false;
       if ((forward || side) && onGround && now - lastStep > 430) {
         audio.step(position.z < -35);
         lastStep = now;
@@ -694,5 +638,8 @@ Object.defineProperty(window, "trail", {
     pitch,
     drawCalls: world.renderer.info.render.calls,
     mode: solo ? "solo" : "online",
+    charging: chargeStarted !== null,
+    bodyVisible: world.selfAvatar.visible,
+    target: world.targetInteraction(),
   }),
 });

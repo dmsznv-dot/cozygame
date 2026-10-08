@@ -1,3 +1,5 @@
+import { SOLIDS, clearSegment } from "./level.ts";
+import { CHARGE_SECONDS, handTarget } from "./holding.ts";
 import RAPIER from "@dimforge/rapier3d-compat";
 import {
   COLORS,
@@ -10,6 +12,7 @@ import {
   initialProgress,
   basketX,
   canOccupy,
+  solved,
   type Player,
   type Ball,
   type Snapshot,
@@ -20,6 +23,7 @@ type Seat = {
   token: string;
   lastMove: number;
   lastAction: number;
+  charging: boolean;
 };
 type PhysicsBall = Ball & {
   body: RAPIER.RigidBody;
@@ -33,6 +37,9 @@ export class Room {
   world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
   balls: PhysicsBall[] = [];
   lastActive = Date.now();
+  basketBody: RAPIER.RigidBody;
+  bridgeCollider: RAPIER.Collider;
+  playerBodies = new Map<string, RAPIER.RigidBody>();
   soloNotes = { signs: false, lightRound: -1, lightCount: 0 };
   constructor(
     public code: string,
@@ -40,14 +47,65 @@ export class Room {
   ) {
     this.world.timestep = 1 / 30;
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(60, 0.1, 60).setTranslation(0, -0.1, 0),
+      RAPIER.ColliderDesc.cuboid(65, 0.1, 50.5).setTranslation(0, -0.1, 14.5),
     );
+    this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(65, 0.1, 11).setTranslation(0, -0.1, -54),
+    );
+    this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(65, 0.1, 3.5).setTranslation(0, -1.2, -39.5),
+    );
+    this.bridgeCollider = this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(2.2, 0.1, 3.8).setTranslation(0, 0.04, -39.5),
+    );
+    this.bridgeCollider.setEnabled(false);
+    for (const s of SOLIDS) {
+      const desc =
+        s.kind === "cylinder"
+          ? RAPIER.ColliderDesc.cylinder(s.h / 2, Math.max(s.w, s.d) / 2)
+          : RAPIER.ColliderDesc.cuboid(s.w / 2, s.h / 2, s.d / 2);
+      desc.setTranslation(s.x, s.y, s.z).setFriction(0.72).setRestitution(0.22);
+      if (s.rotation)
+        desc.setRotation({
+          x: 0,
+          y: Math.sin(s.rotation / 2),
+          z: 0,
+          w: Math.cos(s.rotation / 2),
+        });
+      this.world.createCollider(desc);
+    }
+    this.basketBody = this.world.createRigidBody(
+      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(17, 0, -2),
+    );
+    this.world.createCollider(
+      RAPIER.ColliderDesc.cylinder(0.05, 0.85).setTranslation(0, 0.67, 0),
+      this.basketBody,
+    );
+    for (let i = 0; i < 24; i++) {
+      const a = (i * Math.PI) / 12;
+      this.world.createCollider(
+        RAPIER.ColliderDesc.ball(0.075)
+          .setTranslation(Math.cos(a), 1.45, Math.sin(a))
+          .setRestitution(0.4),
+        this.basketBody,
+      );
+      this.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(0.035, 0.375, 0.035).setTranslation(
+          Math.cos(a) * 0.91,
+          1.04,
+          Math.sin(a) * 0.91,
+        ),
+        this.basketBody,
+      );
+    }
     for (let id = 0; id < 3; id++) {
-      const pos = { x: 14 + id * 0.8, y: 0.4, z: 8 };
+      const pos = { x: 14 + id * 0.8, y: 0.49, z: 8 };
       const body = this.world.createRigidBody(
         RAPIER.RigidBodyDesc.dynamic()
           .setTranslation(pos.x, pos.y, pos.z)
-          .setCcdEnabled(true),
+          .setCcdEnabled(true)
+          .setLinearDamping(0.08)
+          .setAngularDamping(0.35),
       );
       this.world.createCollider(
         RAPIER.ColliderDesc.ball(0.23).setRestitution(0.45).setFriction(0.7),
@@ -60,7 +118,7 @@ export class Room {
         heldBy: null,
         thrownBy: null,
         age: 0,
-        previousY: 0.4,
+        previousY: 0.49,
       });
     }
   }
@@ -86,14 +144,29 @@ export class Room {
           pitch: 0,
           point: false,
           online: true,
+          charge: 0,
         },
         token: Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) =>
           b.toString(16).padStart(2, "0"),
         ).join(""),
         lastMove: Date.now(),
         lastAction: 0,
+        charging: false,
       };
       this.seats.push(seat);
+      const p = seat.player.pos;
+      const body = this.world.createRigidBody(
+        RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
+          p.x,
+          p.y - 0.83,
+          p.z,
+        ),
+      );
+      this.world.createCollider(
+        RAPIER.ColliderDesc.capsule(0.48, 0.31).setFriction(0.6),
+        body,
+      );
+      this.playerBodies.set(seat.player.id, body);
     }
     seat.player.online = true;
     seat.lastMove = Date.now();
@@ -102,7 +175,11 @@ export class Room {
   }
   disconnect(id: string) {
     const s = this.seats.find((x) => x.player.id === id);
-    if (s) s.player.online = false;
+    if (s) {
+      s.player.online = false;
+      s.charging = false;
+      s.player.charge = 0;
+    }
     if (this.progress.operator === id) this.progress.operator = null;
     for (const ball of this.balls) if (ball.heldBy === id) this.resetBall(ball);
     this.lastActive = Date.now();
@@ -131,6 +208,7 @@ export class Room {
           prev.x + ((pos.x - prev.x) * i) / steps,
           prev.z,
           this.progress,
+          prev.y + ((pos.y - prev.y) * i) / steps,
         )
       )
         return false;
@@ -139,6 +217,7 @@ export class Room {
           pos.x,
           prev.z + ((pos.z - prev.z) * i) / steps,
           this.progress,
+          prev.y + ((pos.y - prev.y) * i) / steps,
         )
       )
         return false;
@@ -226,50 +305,91 @@ export class Room {
         (b) =>
           !b.heldBy &&
           distance(b.pos, p.pos) < 3 &&
-          Math.abs(b.pos.y - p.pos.y) < 3,
+          Math.abs(b.pos.y - p.pos.y) < 3 &&
+          (a.id === undefined || b.id === a.id) &&
+          clearSegment(p.pos, b.pos, 0.06),
       );
       if (ball) {
         ball.heldBy = id;
         ball.thrownBy = null;
+        s.charging = false;
+        p.charge = 0;
+        ball.body.collider(0).setSensor(true);
         ball.body.setBodyType(
           RAPIER.RigidBodyType.KinematicPositionBased,
           true,
         );
       }
     }
-    if (a.kind === "throw") {
+    if (
+      a.kind === "charge" &&
+      this.balls.some((b) => b.heldBy === id) &&
+      !s.charging
+    ) {
+      s.charging = true;
+      p.charge = 0;
+    }
+    if (a.kind === "cancelThrow") {
+      s.charging = false;
+      p.charge = 0;
+    }
+    if (a.kind === "throw" || a.kind === "drop") {
       const ball = this.balls.find((b) => b.heldBy === id),
         dir = a.direction;
-      if (!ball || !dir || ![dir.x, dir.y, dir.z].every(Number.isFinite))
+      const drop = a.kind === "drop";
+      if (!ball) return;
+      if (!drop && (!dir || ![dir.x, dir.y, dir.z].every(Number.isFinite)))
         return;
-      const len = Math.hypot(dir.x, dir.y, dir.z);
+      const len = drop ? 1 : Math.hypot(dir.x, dir.y, dir.z);
       if (len < 0.1 || len > 2) return;
-      const direction = { x: dir.x / len, y: dir.y / len, z: dir.z / len };
+      const direction = drop
+        ? { x: 0, y: 0, z: 0 }
+        : { x: dir.x / len, y: dir.y / len, z: dir.z / len };
+      const speed = drop ? 0 : s.charging ? 4 + 10 * p.charge : 10;
+      // Legacy clients still release with their old calibrated speed.
+      const origin =
+        s.charging || drop
+          ? handTarget(p)
+          : {
+              x: p.pos.x + direction.x * 0.7,
+              y: p.pos.y - 0.15,
+              z: p.pos.z + direction.z * 0.7,
+            };
+      if (!clearSegment(p.pos, origin, 0.24)) return;
       ball.heldBy = null;
-      ball.thrownBy = id;
+      ball.thrownBy = drop ? null : id;
       ball.age = 0;
       ball.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
-      ball.body.setTranslation(
+      ball.body.collider(0).setSensor(false);
+      ball.body.setTranslation(origin, true);
+      ball.body.setLinvel(
         {
-          x: p.pos.x + direction.x * 0.7,
-          y: p.pos.y - 0.15,
-          z: p.pos.z + direction.z * 0.7,
+          x: direction.x * speed,
+          y: drop
+            ? -0.25
+            : direction.y * speed + (s.charging ? 0.7 + 2 * p.charge : 2.8),
+          z: direction.z * speed,
         },
         true,
       );
-      ball.body.setLinvel(
-        { x: direction.x * 10, y: direction.y * 10 + 2.8, z: direction.z * 10 },
+      ball.body.setAngvel(
+        { x: -direction.z * speed * 0.35, y: 0, z: direction.x * speed * 0.35 },
         true,
       );
-      ball.previousY = p.pos.y - 0.15;
+      ball.previousY = origin.y;
+      ball.pos = { ...origin };
+      s.charging = false;
+      p.charge = 0;
     }
   }
+
   resetBall(b: PhysicsBall) {
     b.heldBy = null;
     b.thrownBy = null;
     b.age = 0;
     b.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
-    b.body.setTranslation({ x: 14 + b.id * 0.8, y: 0.4, z: 8 }, true);
+    b.body.collider(0).setSensor(false);
+    b.body.setTranslation({ x: 14 + b.id * 0.8, y: 0.49, z: 8 }, true);
     b.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     b.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     b.pos = { ...b.body.translation() };
@@ -289,14 +409,48 @@ export class Room {
       if (!op || (!this.solo && distance(op.player.pos, STATIONS.lever) > 3.7))
         this.progress.operator = null;
     }
+    for (const s of this.seats)
+      if (s.charging)
+        s.player.charge = Math.min(
+          1,
+          s.player.charge + 1 / (30 * CHARGE_SECONDS),
+        );
+    for (const s of this.seats) {
+      const body = this.playerBodies.get(s.player.id)!;
+      body.setEnabled(s.player.online);
+      if (s.player.online)
+        body.setNextKinematicTranslation({
+          x: s.player.pos.x,
+          y: s.player.pos.y - 0.83,
+          z: s.player.pos.z,
+        });
+    }
+    this.bridgeCollider.setEnabled(solved(this.progress));
+    this.basketBody.setNextKinematicTranslation({
+      x: basketX(this.progress.basketLane),
+      y: 0,
+      z: -2,
+    });
     for (const b of this.balls)
       if (b.heldBy) {
         const p = this.seats.find((s) => s.player.id === b.heldBy)!.player;
-        b.body.setNextKinematicTranslation({
-          x: p.pos.x - Math.sin(p.yaw) * 0.8,
-          y: p.pos.y - 0.4,
-          z: p.pos.z - Math.cos(p.yaw) * 0.8,
-        });
+        const target = handTarget(p),
+          old = b.body.translation();
+        const next = {
+          x: old.x + (target.x - old.x) * 0.38,
+          y: old.y + (target.y - old.y) * 0.38,
+          z: old.z + (target.z - old.z) * 0.38,
+        };
+        if (!clearSegment(old, target, 0.23)) {
+          b.heldBy = null;
+          b.thrownBy = null;
+          b.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+          b.body.collider(0).setSensor(false);
+          b.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          const seat = this.seats.find((s) => s.player.id === p.id)!;
+          seat.charging = false;
+          p.charge = 0;
+        } else b.body.setNextKinematicTranslation(next);
       }
     this.world.step();
     for (const b of this.balls) {
@@ -321,8 +475,16 @@ export class Room {
             this.progress.notice = "Три точных броска — огонёк ваш!";
           }
           this.resetBall(b);
-        } else if (b.age > 9 || b.pos.y < -3) this.resetBall(b);
+        } else if (
+          b.age > 45 ||
+          b.pos.y < -3 ||
+          Math.abs(b.pos.x) > 56 ||
+          Math.abs(b.pos.z) > 55
+        )
+          this.resetBall(b);
       }
+      if (!b.heldBy && b.pos.y < -0.5 && b.pos.z < -36 && b.pos.z > -43)
+        this.resetBall(b);
       b.previousY = b.pos.y;
     }
   }
@@ -330,7 +492,12 @@ export class Room {
     return {
       code: this.code,
       players: this.seats.map((s) => s.player),
-      balls: this.balls.map(({ id, pos, heldBy }) => ({ id, pos, heldBy })),
+      balls: this.balls.map(({ id, pos, heldBy, body }) => ({
+        id,
+        pos,
+        heldBy,
+        rotation: { ...body.rotation() },
+      })),
       progress: this.progress,
       signObserver: this.observer("signPlate"),
       lightObserver: this.observer("lightPlate"),

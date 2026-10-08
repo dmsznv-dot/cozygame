@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+  <body style="margin: 0">
+    <canvas id="view"></canvas>
+    <script type="module">
+      import { Forest } from "/src/world.ts";
+      import { createSolo } from "/src/solo.ts";
+      const world = new Forest(document.querySelector("canvas"));
+      const solo = await createSolo("QA", "#f3bf70");
+      world.lobbyAvatar.visible = false;
+      world.companion.visible = false;
+      let position = { x: 0, y: 1.65, z: 20 },
+        yaw = 0,
+        pitch = 0;
+      window.sceneQA = {
+        world,
+        solo,
+        pose(p, y = 0, pi = 0) {
+          position = p;
+          yaw = y;
+          pitch = pi;
+        },
+        action(a) {
+          solo.action(a);
+        },
+      };
+      let last = performance.now();
+      function frame(t) {
+        requestAnimationFrame(frame);
+        const dt = Math.min(0.05, (t - last) / 1000);
+        last = t;
+        solo.pose({ pos: position, yaw, pitch, point: false });
+        solo.tick(dt);
+        world.camera.position.set(position.x, position.y, position.z);
+        world.camera.rotation.order = "YXZ";
+        world.camera.rotation.set(pitch, yaw, 0);
+        world.apply(solo.snapshot(), solo.id);
+        world.render(t / 1000, false);
+      }
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

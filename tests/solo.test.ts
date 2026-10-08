@@ -58,7 +58,7 @@ test("solo full chapter: revisit lamps every round, fix basket, throw three real
     a.player.pos = { x: 17, y: 1.65, z: 6 };
     r.action(a.player.id, {
       kind: "throw",
-      direction: { x: 0, y: 0.08, z: -Math.sqrt(1 - 0.08 * 0.08) },
+      direction: { x: 0, y: 0.14, z: -Math.sqrt(1 - 0.14 * 0.14) },
     });
     for (let j = 0; j < 50; j++) r.tick();
     assert.equal(r.progress.throws, i + 1);

@@ -2,7 +2,9 @@ import WebSocket from "ws";
 import assert from "node:assert/strict";
 const sockets = [];
 function client() {
-  const ws = new WebSocket("ws://localhost:3000/socket");
+  const ws = new WebSocket(
+    process.env.SOCKET_URL || "ws://localhost:3000/socket",
+  );
   sockets.push(ws);
   const inbox = [];
   ws.on("message", (raw) => inbox.push(JSON.parse(String(raw))));
@@ -58,9 +60,16 @@ try {
     if (state.players.find((p) => p.id === first.id).pos.z === 19.8) break;
   }
   assert.equal(state.players.find((p) => p.id === first.id).pos.z, 19.8);
-  a.ws.send(JSON.stringify({type:"move",pos:{x:50,y:1.65,z:40},yaw:0,pitch:0}));
-  const correction=await a.wait("correction");
-  assert.equal(correction.pos.z,19.8);
+  a.ws.send(
+    JSON.stringify({
+      type: "move",
+      pos: { x: 50, y: 1.65, z: 40 },
+      yaw: 0,
+      pitch: 0,
+    }),
+  );
+  const correction = await a.wait("correction");
+  assert.equal(correction.pos.z, 19.8);
   const other = client();
   await other.join({});
   const otherWelcome = await other.wait("welcome");

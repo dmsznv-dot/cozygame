@@ -811,3 +811,22 @@ button[aria-busy="true"] {
   line-height: 1.7;
   color: #54654d;
 }
+
+/* A quiet playfield: only interaction focus and a throw gesture, no solutions. */
+#crosshair.actionable {
+  width: 10px;
+  height: 10px;
+  border: 1px solid #fff0c6;
+  background: transparent;
+}
+#crosshair.charging {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: conic-gradient(#ffe3a5 var(--charge), #ffffff25 0);
+  mask: radial-gradient(transparent 8px, #000 9px);
+}
+#prompt:empty {
+  display: none;
+}

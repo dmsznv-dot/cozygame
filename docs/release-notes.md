@@ -18,3 +18,7 @@
 
 ## Одиночная прогулка на Pages
 Кнопка старта теперь открывает локальную игру без сервера и второго игрока. Все три задачи адаптированы: заметка с рисунками, фиксируемая корзина, запоминание числа ламп текущего раунда. Физика Rapier и правила общие с сервером; кооперативные проверки сохранены. Исправлен курсор отключённых кнопок: вместо бесконечного ожидания используется обычный запрет действия. При загрузке локальной физики показывается явный статус и доступна повторная попытка после ошибки.
+
+## Forest polish
+
+Removed world tutorial signs and solution overlays. Replaced puzzle symbols and the lamp table with proportionally sized vector panels and click interaction. Added a first-person body with animated limbs. Expanded original forest scenery with birches, ferns, moss, ruins and distant mountain silhouettes, improved ground/water/sky materials and optional bloom. Shared obstacles now block players and balls; charged throwing, gentle drop, safe pickup/carry and ball rotation work in solo and co-op.

@@ -5,12 +5,16 @@ const browser = await chromium.launch({
 });
 const a = await browser.newPage({ viewport: { width: 1200, height: 850 } });
 const errors = [];
+const base = process.env.GAME_URL || "http://localhost:3000";
 a.on("pageerror", (e) => errors.push(e.message));
 a.on("console", (m) => {
   if (m.type() === "error") errors.push(m.text());
 });
 console.log("load lobby");
-await a.goto("http://localhost:3000");
+await a.goto(base);
+await a.locator("#lobby-help").click();
+await a.locator("#quality").selectOption("low");
+await a.locator("#resume").click();
 await a.waitForTimeout(2500);
 await a.screenshot({ path: "artifacts/lobby.png" });
 console.log("create room");
@@ -21,7 +25,10 @@ const code = await a.evaluate(() => window.trail.snapshot.code);
 console.log("joining second");
 const b = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 b.on("pageerror", (e) => errors.push(e.message));
-await b.goto("http://localhost:3000/?room=" + code);
+await b.goto(base + "/?room=" + code);
+await b.locator("#lobby-help").click();
+await b.locator("#quality").selectOption("low");
+await b.locator("#resume").click();
 await b.locator("#name").fill("Мох");
 await b.locator(".swatch").nth(1).click();
 await b.locator("#join-form button").click();
@@ -35,14 +42,21 @@ await a.evaluate(() => {
   const original = canvas.requestPointerLock.bind(canvas);
   let rejectOnce = true;
   canvas.requestPointerLock = () => {
-    if (rejectOnce) { rejectOnce = false; return Promise.reject(new Error("Test denial")); }
+    if (rejectOnce) {
+      rejectOnce = false;
+      return Promise.reject(new Error("Test denial"));
+    }
     return original();
   };
 });
 await a.locator("#resume").click();
-await a.waitForFunction(() => window.trail.paused && document.querySelector("#overlay").hidden);
-await a.locator("#world").click({position:{x:600,y:400}});
-await a.waitForFunction(() => !window.trail.paused && document.pointerLockElement !== null);
+await a.waitForFunction(
+  () => window.trail.paused && document.querySelector("#overlay").hidden,
+);
+await a.locator("#world").click({ position: { x: 600, y: 400 } });
+await a.waitForFunction(
+  () => !window.trail.paused && document.pointerLockElement !== null,
+);
 console.log("moving");
 await a.waitForTimeout(300);
 await a.keyboard.down("KeyW");

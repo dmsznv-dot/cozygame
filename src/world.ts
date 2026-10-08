@@ -1,5 +1,12 @@
+import { addScenery, addSky, groundMaterial } from "./scenery";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { LOGS, ROCKS, RUINS, clearSegment } from "../shared/level";
+import { panelTexture, drawSymbol } from "./pictograms";
 import * as THREE from "three";
-import { avatar } from "./avatar";
+import { avatar, animateAvatar, paintAvatar } from "./avatar";
 import {
   TREES,
   WALLS,
@@ -16,16 +23,16 @@ export class Forest {
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 180);
   renderer: THREE.WebGLRenderer;
-  heldOrb = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 16, 12),
-    new THREE.MeshStandardMaterial({
-      color: "#f7d792",
-      emissive: "#bf8a34",
-      emissiveIntensity: 0.4,
-    }),
-  );
+  composer: EffectComposer;
   lobbyAvatar = avatar("#f3bf70");
   companion = avatar("#a6c7a1");
+  selfAvatar = avatar("#f3bf70", true);
+  clueTiles: THREE.Mesh[] = [];
+  interactables: THREE.Object3D[] = [];
+  raycaster = new THREE.Raycaster();
+  lastSelfPosition = new THREE.Vector3();
+  moveBlend = 0;
+  highQuality = true;
   basket = new THREE.Group();
   bridge = new THREE.Group();
   lampMeshes: THREE.Mesh[] = [];
@@ -48,39 +55,56 @@ export class Forest {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.18;
-    this.scene.add(this.camera);
-    this.heldOrb.position.set(0.4, -0.32, -0.75);
-    this.heldOrb.visible = false;
-    this.camera.add(this.heldOrb);
-    this.scene.background = new THREE.Color("#bdc9ad");
-    this.scene.fog = new THREE.FogExp2("#b7c7ac", 0.016);
-    this.scene.add(new THREE.HemisphereLight("#e4e9cb", "#5b7250", 2.2));
-    this.sun = new THREE.DirectionalLight("#ffe0a0", 3.2);
+    this.renderer.toneMappingExposure = 1.02;
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.composer.addPass(
+      new UnrealBloomPass(
+        new THREE.Vector2(innerWidth, innerHeight),
+        0.16,
+        0.45,
+        1.12,
+      ),
+    );
+    this.composer.addPass(new OutputPass());
+    this.scene.add(this.camera, this.selfAvatar);
+    this.selfAvatar.visible = false;
+
+    this.scene.background = new THREE.Color("#c9d8c7");
+    this.scene.fog = new THREE.FogExp2("#c9d8c7", 0.009);
+    this.scene.add(new THREE.HemisphereLight("#cce7f1", "#777453", 1.2));
+    this.sun = new THREE.DirectionalLight("#fff0cb", 2.6);
     this.sun.position.set(32, 38, -28);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(1024, 1024);
+    this.sun.shadow.mapSize.set(2048, 2048);
     Object.assign(this.sun.shadow.camera, {
-      left: -50,
-      right: 50,
-      top: 50,
-      bottom: -50,
+      left: -28,
+      right: 28,
+      top: 28,
+      bottom: -28,
       near: 1,
       far: 130,
     });
-    this.sun.shadow.normalBias = 0.05;
+    this.sun.shadow.normalBias = 0.035;
     this.sun.shadow.bias = -0.0002;
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
-    const ground = this.mesh(
-      new THREE.PlaneGeometry(130, 130, 1, 1),
-      mat("#7b9560"),
-      0,
-      -0.03,
-      0,
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
+    addSky(this.scene);
+    const groundMat = groundMaterial();
+    for (const [z, depth] of [
+      [14.5, 101],
+      [-54, 22],
+    ]) {
+      const ground = this.mesh(
+        new THREE.PlaneGeometry(130, depth),
+        groundMat,
+        0,
+        -0.03,
+        z,
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+    }
     // Winding sand paths: overlapping soft-edged circles, with varied stone edging.
     const pathmat = mat("#b9b18a");
     const path = (points: THREE.Vector3[], width: number) => {
@@ -146,6 +170,7 @@ export class Forest {
     );
     this.trees();
     this.groundDetails();
+    addScenery(this.scene, this.wind);
     this.water = new THREE.ShaderMaterial({
       uniforms: {
         time: { value: 0 },
@@ -153,8 +178,20 @@ export class Forest {
         shallow: { value: new THREE.Color("#91c4a5") },
       },
       vertexShader: `varying vec2 vUv; varying vec3 vWorld; uniform float time; void main(){vUv=uv;vec3 p=position;p.z+=sin(p.x*.8+time)*.035+cos(p.y*1.4+time*.7)*.025;vWorld=(modelMatrix*vec4(p,1.)).xyz;gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);}`,
-      fragmentShader: `varying vec2 vUv;varying vec3 vWorld;uniform float time;uniform vec3 deep;uniform vec3 shallow;void main(){float rip=sin(vWorld.x*2.4+vWorld.z*5.+time*1.8)*sin(vWorld.x*.7-vWorld.z*2.+time);float gleam=pow(max(0.,rip),14.);vec3 col=mix(deep,shallow,.35+.2*sin(vWorld.x*.15+vWorld.z));col+=vec3(1.,.93,.68)*gleam*.45;gl_FragColor=vec4(col,1.);
-#include <tonemapping_fragment>\n#include <colorspace_fragment>}`,
+      fragmentShader: `varying vec2 vUv;varying vec3 vWorld;uniform float time;uniform vec3 deep;uniform vec3 shallow;
+      void main(){
+        vec2 p=vWorld.xz;float wave=sin(p.x*1.7+p.y*3.+time*1.2)*.5+sin(p.x*.7-p.y*2.1+time*.8)*.5;
+        vec3 normal=normalize(vec3(cos(p.x*1.7+p.y*3.+time*1.2)*.10,1.,sin(p.y*2.1-p.x*.7-time*.8)*.10));
+        vec3 view=normalize(cameraPosition-vWorld);float fresnel=pow(1.-max(dot(view,normal),0.),3.);
+        vec3 reflected=reflect(-view,normal);float sparkle=pow(max(dot(reflected,normalize(vec3(24.,34.,-20.))),0.),130.);
+        float bank=smoothstep(2.6,3.48,abs(p.y+39.5)+wave*.08);
+        vec3 col=mix(deep,shallow,.38+bank*.48+wave*.045);
+        col=mix(col,vec3(.60,.76,.77),fresnel*.65);col+=vec3(1.,.88,.63)*sparkle*.8;
+        col=mix(col,vec3(.82,.88,.72),bank*.28*max(0.,wave));
+        gl_FragColor=vec4(col,1.);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
       side: THREE.DoubleSide,
     });
     const water = this.mesh(
@@ -183,7 +220,7 @@ export class Forest {
     this.lightStation();
     this.makeBridge();
     this.camp();
-    this.directionSigns();
+
     this.lobbyAvatar.position.set(7, 0.02, 16);
     this.lobbyAvatar.rotation.y = -2.65;
     this.lobbyAvatar.scale.setScalar(1.7);
@@ -247,52 +284,91 @@ export class Forest {
     m.receiveShadow = true;
     return m;
   }
-  board(
-    text: string,
+  panel(
     x: number,
     y: number,
     z: number,
-    width = 3,
-    height = 1.3,
-    color = "#e9e4ca",
+    width: number,
+    height: number,
+    draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void,
+    action?: unknown,
   ) {
-    const c = document.createElement("canvas");
-    c.width = 768;
-    c.height = 320;
-    const ctx = c.getContext("2d")!;
-    ctx.fillStyle = color;
-    ctx.fillRect(0, 0, 768, 320);
-    ctx.strokeStyle = "#536449";
-    ctx.lineWidth = 3;
-    ctx.strokeRect(12, 12, 744, 296);
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = "#354d3e";
-    const lines = text.split("\n");
-    ctx.font = `${lines.length > 2 ? 33 : 46}px Georgia`;
-    lines.forEach((line, i) =>
-      ctx.fillText(line, 384, 160 + (i - (lines.length - 1) / 2) * 65),
+    const board = this.box(width, height, 0.14, "#75654e", x, y, z);
+    const texture = panelTexture(width, height, draw);
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(width - 0.04, height - 0.04),
+      new THREE.MeshStandardMaterial({
+        map: texture,
+        roughness: 0.86,
+        emissiveMap: texture,
+        emissive: "#ffffff",
+        emissiveIntensity: 0.1,
+      }),
     );
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    const board = this.mesh(
-      new THREE.BoxGeometry(width, height, 0.1),
-      mat("#705c40"),
+    face.position.z = 0.076;
+    board.add(face);
+    board.userData.puzzle = true;
+    if (action) {
+      board.userData.action = action;
+      this.interactables.push(board);
+    }
+    return board;
+  }
+  symbolPanel(
+    id: number,
+    x: number,
+    y: number,
+    z: number,
+    size: number,
+    action?: unknown,
+  ) {
+    return this.panel(
       x,
       y,
       z,
+      size,
+      size,
+      (ctx, w, h) => drawSymbol(ctx, id, w / 2, h / 2, w * 0.72),
+      action,
     );
-    const face = new THREE.Mesh(
-      new THREE.PlaneGeometry(width * 0.97, height * 0.94),
-      new THREE.MeshStandardMaterial({ map: tex, roughness: 1 }),
-    );
-    face.position.z = 0.056;
-    board.add(face);
-    return board;
+  }
+  targetInteraction() {
+    this.raycaster.setFromCamera(new THREE.Vector2(), this.camera);
+    this.raycaster.far = 4;
+    const hits = this.raycaster.intersectObjects(this.interactables, true);
+    for (const hit of hits) {
+      let object: THREE.Object3D | null = hit.object;
+      while (object && !object.userData.action) object = object.parent;
+      if (!object || !object.visible) continue;
+      const end = hit.point.clone().lerp(this.camera.position, 0.035);
+      if (clearSegment(this.camera.position, end, 0.005))
+        return object.userData.action;
+    }
+    return null;
+  }
+  pineGeometry() {
+    const g = new THREE.ConeGeometry(1, 1, 16, 5);
+    const positions = g.attributes.position;
+    for (let i = 0; i < positions.count; i++) {
+      const x = positions.getX(i),
+        y = positions.getY(i),
+        z = positions.getZ(i),
+        angle = Math.atan2(z, x);
+      const ripple =
+        1 + Math.sin(angle * 5 + y * 5) * 0.08 + Math.cos(angle * 9) * 0.045;
+      positions.setXYZ(
+        i,
+        x * ripple,
+        y - Math.sin(angle * 5) * 0.025 * (0.5 - y),
+        z * ripple,
+      );
+    }
+    g.computeVertexNormals();
+    return g;
   }
   trees() {
     const trunkMat = mat("#766c51");
-    const leafMat = mat("#526f47");
+    const leafMat = mat("#d2dfb9");
     leafMat.onBeforeCompile = (shader) => {
       shader.uniforms.uWind = this.wind;
       shader.vertexShader = "uniform float uWind;\n" + shader.vertexShader;
@@ -307,7 +383,7 @@ export class Forest {
       TREES.length,
     );
     const leaves = new THREE.InstancedMesh(
-      new THREE.ConeGeometry(1, 1, 8),
+      this.pineGeometry(),
       leafMat,
       TREES.filter((t) => t.pine).length * 3,
     );
@@ -343,9 +419,9 @@ export class Forest {
         target.setColorAt(
           idx,
           new THREE.Color().setHSL(
-            0.23 + (i % 6) * 0.008,
+            0.22 + (i % 6) * 0.008,
             0.22 + (i % 3) * 0.04,
-            0.25 + (i % 7) * 0.018,
+            0.34 + (i % 7) * 0.025,
           ),
         );
       }
@@ -359,7 +435,16 @@ export class Forest {
   groundDetails() {
     const dummy = new THREE.Object3D();
     const geo = new THREE.ConeGeometry(0.16, 0.55, 3);
-    const grass = new THREE.InstancedMesh(geo, mat("#809258"), 2400);
+    const grassMat = mat("#9fb875");
+    grassMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uWind = this.wind;
+      shader.vertexShader = "uniform float uWind;\n" + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\ntransformed.x += sin(uWind*1.2+position.y*3.)*.09*max(position.y,0.);",
+      );
+    };
+    const grass = new THREE.InstancedMesh(geo, grassMat, 2400);
     let index = 0;
     for (let i = 0; i < 4000 && index < 2400; i++) {
       const x = Math.sin(i * 127.1) * 52,
@@ -387,24 +472,34 @@ export class Forest {
     grass.count = index;
     this.scene.add(grass);
     const rockMat = mat("#8f9980");
-    for (let i = 0; i < 65; i++) {
-      const x = Math.sin(i * 21.73) * 44,
-        z = Math.cos(i * 8.17) * 37;
-      if (
-        Math.abs(x) < 5 ||
-        Object.values(STATIONS).some((p) => Math.hypot(x - p.x, z - p.z) < 5)
-      )
-        continue;
+    for (const [i, p] of ROCKS.entries()) {
       const rock = this.mesh(
-        new THREE.DodecahedronGeometry(0.3 + (i % 4) * 0.15, 0),
+        new THREE.DodecahedronGeometry(p.r, 1),
         rockMat,
-        x,
-        0.1,
-        z,
+        p.x,
+        p.r * 0.32,
+        p.z,
       );
       rock.scale.set(1.3, 0.7, 1);
-      rock.rotation.set(i, 0, i);
+      rock.rotation.y = i;
       rock.castShadow = true;
+      rock.receiveShadow = true;
+      const moss = this.mesh(
+        new THREE.SphereGeometry(
+          p.r * 0.8,
+          10,
+          5,
+          0,
+          Math.PI * 2,
+          0,
+          Math.PI / 2,
+        ),
+        mat("#617b49"),
+        p.x,
+        p.r * 0.53,
+        p.z,
+      );
+      moss.scale.set(1.1, 0.22, 0.8);
     }
     const flowerMat = mat("#e1d5a0"),
       stemMat = mat("#657b46");
@@ -428,12 +523,7 @@ export class Forest {
       );
       flower.scale.y = 0.4;
     }
-    for (const [x, z] of [
-      [-8, 15],
-      [13, 18],
-      [-25, -1],
-      [7, -16],
-    ]) {
+    for (const { x, z } of LOGS) {
       const log = this.mesh(
         new THREE.CylinderGeometry(0.35, 0.4, 3.5, 9),
         mat("#78674c"),
@@ -485,51 +575,32 @@ export class Forest {
     roof.rotation.y = Math.PI / 4;
     roof.scale.z = 1.25;
     roof.castShadow = true;
-    this.board(
-      "01  /  ЛЕСНЫЕ ЗНАКИ\nОдин видит. Другой собирает.",
-      -20,
-      2.8,
-      -3.16,
-      4.5,
-      0.85,
-    );
+
     this.plate(-20, -8);
-    this.board(
-      "Встань на круг\nи поделись рисунками",
-      -20,
-      2,
-      -12.15,
-      3.9,
-      1.2,
-    );
-    const icons = ["◒", "☾", "☀", "≈"];
-    for (let i = 0; i < 4; i++) {
-      const b = this.board(
-        `${i + 1}    ${icons[i]}`,
-        -16.5 + i * 1.05,
-        1.2,
-        -4,
-        1,
-        0.85,
+
+    for (let i = 0; i < 3; i++) {
+      const b = this.symbolPanel(
+        SIGN_SEQUENCE[i],
+        -21.2 + i * 1.2,
+        1.9,
+        -12.15,
+        1.02,
       );
+      this.clueTiles.push(b);
+    }
+    for (let i = 0; i < 4; i++) {
+      const b = this.symbolPanel(i, -16.5 + i * 1.05, 1.2, -4, 0.92, {
+        kind: "symbol",
+        value: i,
+      });
       this.box(0.13, 1, 0.13, "#776c4b", b.position.x, 0.5, -4);
       this.signTiles.push(b);
     }
-    this.board("Друг внутри → нажимай 1–4", -15, 2.2, -4, 4.3, 0.55);
     const lantern = new THREE.PointLight("#ffd48b", 6, 9, 2);
     lantern.position.set(-20, 3, -8);
     this.scene.add(lantern);
   }
   throwStation() {
-    this.board(
-      "02  /  ПО ТУ СТОРОНУ\nТри шара. Две пары рук.",
-      17,
-      3,
-      -4,
-      5,
-      1,
-    );
-    for (const x of [14, 20]) this.box(0.15, 3, 0.15, "#75684c", x, 1.5, -4);
     this.box(9, 0.15, 0.2, "#91896b", 17, 0.55, -2);
     this.scene.add(this.basket);
     const rim = new THREE.Mesh(
@@ -564,6 +635,8 @@ export class Forest {
       5,
     );
     lever.rotation.z = -0.5;
+    lever.userData.action = { kind: "lever" };
+    this.interactables.push(lever);
     this.mesh(
       new THREE.SphereGeometry(0.15, 12, 8),
       mat("#cdab75"),
@@ -571,8 +644,7 @@ export class Forest {
       1.5,
       5,
     );
-    this.board("E — держать рычаг\n← → двигать корзину", 22, 2.35, 4.8, 3, 1);
-    this.board("Возьми шар: E\nПрицелься чуть выше • ЛКМ", 15, 1.8, 9, 3.4, 1);
+
     this.box(3, 0.2, 1, "#8d7d5d", 15, 0.15, 8);
     const ring = this.mesh(
       new THREE.TorusGeometry(0.7, 0.05, 5, 24),
@@ -587,14 +659,7 @@ export class Forest {
     const w = WALLS[5];
     this.box(w.w, w.h, w.d, "#8d9273", w.x, w.h / 2, w.z);
     this.plate(-6, -27);
-    this.board(
-      "03  /  СВЕТЛЯЧКИ\nСосчитай огни. Передай число.",
-      -6,
-      3,
-      -30,
-      5,
-      1,
-    );
+
     for (let i = 0; i < 5; i++) {
       const x = -8 + i;
       this.box(0.08, 1.8, 0.08, "#746c51", x, 0.9, -29);
@@ -611,16 +676,41 @@ export class Forest {
       );
       this.lampMeshes.push(bulb);
     }
-    this.board(
-      "ОГНИ  →  КОД\n1 → 4    2 → 7    3 → 2\n4 → 9    5 → 5",
-      2,
-      2.1,
-      -25,
-      4,
-      1.8,
-    );
+
+    this.panel(2, 2.1, -25, 3.6, 2.1, (ctx, w, h) => {
+      ctx.fillStyle = "#314d45";
+      ctx.strokeStyle = "#314d45";
+      [4, 7, 2, 9, 5].forEach((code, row) => {
+        const y = (h * (row + 0.5)) / 5;
+        for (let i = 0; i <= row; i++) {
+          ctx.beginPath();
+          ctx.arc(w * 0.12 + i * w * 0.09, y, 9, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.font = `${h * 0.12}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("→", w * 0.7, y);
+        ctx.fillText(String(code), w * 0.86, y);
+      });
+    });
     this.box(4, 1.15, 1, "#8c9778", 2, 0.57, -24.8);
-    this.board("Введи код клавишей 1–9", 2, 0.95, -24.21, 3.7, 0.5);
+    for (let i = 1; i <= 9; i++)
+      this.panel(
+        0.35 + (i - 1) * 0.41,
+        0.85,
+        -24.22,
+        0.37,
+        0.42,
+        (ctx, w, h) => {
+          ctx.font = `${h * 0.68}px sans-serif`;
+          ctx.fillStyle = "#314d45";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(String(i), w / 2, h / 2);
+        },
+        { kind: "number", value: i },
+      );
   }
   makeBridge() {
     this.scene.add(this.bridge);
@@ -651,15 +741,6 @@ export class Forest {
       this.bridge.add(rail);
     }
     this.bridge.visible = false;
-    this.board(
-      "За ручьём — наш вечер\nЗажгите все три огонька",
-      0,
-      2,
-      -35.4,
-      4,
-      1,
-    );
-    this.box(0.15, 1.7, 0.15, "#7a7657", 0, 0.85, -35.5);
   }
   camp() {
     this.box(3.5, 0.25, 0.8, "#93876b", -1, 0.6, -48);
@@ -681,33 +762,65 @@ export class Forest {
     const glow = new THREE.PointLight("#ffbf61", 6, 10);
     glow.position.set(1, 1, -47);
     this.scene.add(glow);
-    this.board("Хорошо, когда вы рядом.", 0, 2.4, -51, 5, 0.9);
-  }
-  directionSigns() {
-    this.box(0.17, 2.8, 0.17, "#766f50", -3, 1.4, 11);
-    this.board("←  Лесные знаки", -3, 2.6, 11.15, 3.4, 0.55);
-    this.board("Броски  →", -2.7, 1.9, 11.15, 2.8, 0.55);
-    this.board("↑  Светлячки", -3, 1.2, 11.15, 3, 0.55);
   }
   resize() {
     this.camera.aspect = innerWidth / innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(innerWidth, innerHeight);
+    this.composer.setSize(innerWidth, innerHeight);
   }
   quality(high: boolean) {
+    this.highQuality = high;
+    this.composer.setPixelRatio(Math.min(devicePixelRatio, high ? 1.6 : 1));
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, high ? 1.6 : 1));
     this.renderer.shadowMap.enabled = high;
     this.sun.castShadow = high;
     this.resize();
   }
   apply(s: Snapshot, myId: string) {
-    this.heldOrb.visible = s.balls.some((b) => b.heldBy === myId);
+    this.selfAvatar.visible = true;
+    const me = s.players.find((p) => p.id === myId);
+    if (me) {
+      paintAvatar(this.selfAvatar, me.color);
+      const current = this.camera.position.clone();
+      const moving = Math.min(
+        1,
+        current.distanceTo(this.lastSelfPosition) * 18,
+      );
+      this.moveBlend = THREE.MathUtils.lerp(this.moveBlend, moving, 0.15);
+      this.lastSelfPosition.copy(current);
+      this.selfAvatar.position
+        .copy(current)
+        .add(new THREE.Vector3(0, -1.65, 0));
+      this.selfAvatar.rotation.y = me.yaw;
+      this.selfAvatar.updateMatrixWorld(true);
+      const held = s.balls.find((b) => b.heldBy === myId);
+      const target = held
+        ? this.selfAvatar.worldToLocal(
+            new THREE.Vector3(held.pos.x, held.pos.y, held.pos.z),
+          )
+        : undefined;
+      animateAvatar(
+        this.selfAvatar,
+        performance.now() / 1000,
+        this.moveBlend,
+        target,
+        me.point,
+        me.pitch,
+      );
+    }
+    this.clueTiles.forEach((m) => (m.visible = s.signObserver !== null));
+    this.signTiles.forEach((m, i) => {
+      (m.material as THREE.MeshStandardMaterial).color.set(
+        s.progress.signs
+          ? "#a6bc70"
+          : i === s.progress.signIndex
+            ? "#bda477"
+            : "#75654e",
+      );
+    });
     this.bridge.visible = solved(s.progress);
-    this.basket.position.x = THREE.MathUtils.lerp(
-      this.basket.position.x,
-      basketX(s.progress.basketLane),
-      0.18,
-    );
+    this.basket.position.x = basketX(s.progress.basketLane);
     this.lampMeshes.forEach((m, i) => {
       const on =
         s.lightObserver !== null &&
@@ -722,19 +835,45 @@ export class Forest {
         mesh = this.mesh(
           new THREE.SphereGeometry(0.23, 20, 12),
           new THREE.MeshStandardMaterial({
-            color: "#f7d792",
-            emissive: "#d69839",
-            emissiveIntensity: 0.3,
+            color: "#fff1cc",
+            emissive: "#f7b947",
+            emissiveIntensity: 0.55,
           }),
           b.pos.x,
           b.pos.y,
           b.pos.z,
         );
         mesh.castShadow = true;
+        const seamMat = mat("#ab7e3e");
+        for (let i = 0; i < 3; i++) {
+          const seam = new THREE.Mesh(
+            new THREE.TorusGeometry(0.231, 0.006, 4, 32),
+            seamMat,
+          );
+          seam.rotation.set(
+            i === 1 ? Math.PI / 2 : 0,
+            i === 2 ? Math.PI / 2 : 0,
+            0,
+          );
+          mesh.add(seam);
+        }
         this.balls.set(b.id, mesh);
+        mesh.userData.action = { kind: "pickup", id: b.id };
+        this.interactables.push(mesh);
       }
       mesh.position.lerp(new THREE.Vector3(b.pos.x, b.pos.y, b.pos.z), 0.5);
-      mesh.visible = b.heldBy !== myId;
+      if (b.rotation)
+        mesh.quaternion.slerp(
+          new THREE.Quaternion(
+            b.rotation.x,
+            b.rotation.y,
+            b.rotation.z,
+            b.rotation.w,
+          ),
+          0.5,
+        );
+      mesh.visible = true;
+      if (b.heldBy === myId) mesh.position.set(b.pos.x, b.pos.y, b.pos.z);
     }
     for (const p of s.players) {
       if (p.id === myId) continue;
@@ -754,16 +893,14 @@ export class Forest {
       other.rotation.y = p.yaw;
       const moving = old.distanceTo(other.position) > 0.005;
       const time = performance.now() / 1000;
-      other.userData.feet.forEach(
-        (f: THREE.Mesh, i: number) =>
-          (f.position.y =
-            0.12 + (moving ? Math.sin(time * 10 + i * Math.PI) * 0.08 : 0)),
-      );
-      other.userData.hands[0].position.set(
-        -0.65,
-        p.point ? 1.1 : 0.65,
-        p.point ? -0.8 : -0.08,
-      );
+      const held = s.balls.find((b) => b.heldBy === p.id);
+      other.updateMatrixWorld(true);
+      const target = held
+        ? other.worldToLocal(
+            new THREE.Vector3(held.pos.x, held.pos.y, held.pos.z),
+          )
+        : undefined;
+      animateAvatar(other, time, moving ? 1 : 0, target, p.point, p.pitch);
       let line = this.pointLines.get(p.id);
       if (!line) {
         line = new THREE.Line(
@@ -806,6 +943,12 @@ export class Forest {
       this.companion.userData.body.position.y =
         0.88 + Math.sin(time * 1.7 + 1) * 0.035;
     }
-    this.renderer.render(this.scene, this.camera);
+    const center = this.camera.position;
+    const x = Math.round(center.x * 16) / 16,
+      z = Math.round(center.z * 16) / 16;
+    this.sun.position.set(x + 24, 34, z - 20);
+    this.sun.target.position.set(x, 0, z);
+    if (this.highQuality) this.composer.render();
+    else this.renderer.render(this.scene, this.camera);
   }
 }
